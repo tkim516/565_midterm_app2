@@ -22,20 +22,20 @@ def load_pickle(file_name):
 def load_csv(file_name):
     return pd.read_csv(file_name)
 
-# Load models
+# Load the model
 reg_model = load_pickle('mapie_traffic.pickle')
 
 # Load dataset for defaults
 df = load_csv('Traffic_Volume.csv')
 df['date_time'] = pd.to_datetime(df['date_time'], format='%m/%d/%y %H:%M')
 
-# Extract day, month, year, and time
-df['day'] = df['date_time'].dt.day.astype(int)
-df['month'] = df['date_time'].dt.month.astype(int)
-df['year'] = df['date_time'].dt.year.astype(int)
-df['time'] = df['date_time'].dt.hour
-df = df.drop(columns=['date_time'])
+# Extract day, month, and weekday
+df['weekday'] = df['date_time'].dt.strftime('%A')
+df['month'] = df['date_time'].dt.strftime('%B')
+df['hour'] = df['date_time'].dt.hour
 
+# Drop the original 'date_time' column
+df = df.drop(columns=['date_time'])
 sample_df = df.copy()
 
 # Confidence Interval Slider
@@ -52,7 +52,7 @@ with st.sidebar.form("user_inputs_form"):
         input_CSV = st.file_uploader('Upload CSV')
 
     with st.expander('Option 2: Fill Out Form'):
-        holiday_options = df['holiday'].unique()
+        holiday_options = sample_df['holiday'].unique()
         input_holiday = st.selectbox('Holiday', options=holiday_options)
         
         input_temp = st.number_input('Temp (F)', value=sample_df['temp'].mean())
@@ -60,13 +60,15 @@ with st.sidebar.form("user_inputs_form"):
         input_snow = st.number_input('Snow (mm) in past hour', value=sample_df['snow_1h'].mean())
         input_clouds = st.number_input('Cloud coverage percent', value=sample_df['clouds_all'].mean())
 
-        weather_options = df['weather_main'].unique()
+        weather_options = sample_df['weather_main'].unique()
         input_weather = st.selectbox('Weather description', options=weather_options)
 
-        input_day = st.number_input('Day of month', min_value=1, max_value=31)
-        input_month = st.number_input('Month', min_value=1, max_value=12)
-        input_year = st.number_input('Year', value=sample_df['year'].mean())
-        input_time = st.number_input('Time (24 Hour)', value=sample_df['time'].mean())
+        day_options = sample_df['weekday'].unique()
+        input_day = st.selectbox('Weekday', options=day_options)
+
+        month_options = sample_df['month'].unique()
+        input_month = st.selectbox('Month', options=month_options)
+        input_time = st.number_input('Time (24 Hour)', value=sample_df['hour'].mean())
 
     submit_button = st.form_submit_button("Predict")
 
@@ -81,17 +83,6 @@ if submit_button:
 
             # Normalize column names
             df.columns = df.columns.str.strip().str.lower()
-
-            if 'date_time' not in df.columns:
-                st.error("The uploaded CSV file does not contain a 'date_time' column. Please upload a valid file.")
-            else:
-                df['date_time'] = pd.to_datetime(df['date_time'], format='%m/%d/%y %H:%M')
-                df['day'] = df['date_time'].dt.day
-                df['month'] = df['date_time'].dt.month
-                df['year'] = df['date_time'].dt.year
-                df['time'] = df['date_time'].dt.hour
-                df = df.drop(columns=['date_time'])
-
         else:
             # Use manually entered form data
             df = pd.DataFrame([{
@@ -101,22 +92,30 @@ if submit_button:
                 'snow_1h': input_snow,
                 'clouds_all': input_clouds,
                 'weather_main': input_weather,
-                'day': input_day,
+                'weekday': input_day,
                 'month': input_month,
-                'year': input_year,
-                'time': input_time
+                'hour': input_time
             }])
 
         # Encode categorical variables
-        encoded_df = pd.get_dummies(df, columns=['holiday', 'weather_main'], drop_first=True)
+        encoded_df = pd.get_dummies(df, columns=['holiday', 'weather_main', 'weekday', 'month'], drop_first=True)
 
-        # Prediction logic
+        # Prediction logic with confidence intervals
         alpha = confidence_interval
-        predictions = reg_model.predict(encoded_df)
+        predictions, intervals = reg_model.predict(encoded_df, alpha=alpha)
 
-        # Display predictions
+        # Extract intervals
+        lower_bounds = intervals[:, 0]
+        upper_bounds = intervals[:, 1]
+
+        # Add predictions and intervals to DataFrame
         encoded_df['predicted_volume'] = predictions
+        encoded_df['lower_bound'] = lower_bounds
+        encoded_df['upper_bound'] = upper_bounds
+
+        # Display results
         st.metric(label="Predicted Traffic Volume", value=f"{predictions[0]:.2f}")
+        st.write(f"Confidence Interval: {lower_bounds[0]:.2f} to {upper_bounds[0]:.2f}")
         st.write(encoded_df)
     except Exception as e:
         st.error(f"An error occurred: {e}")
