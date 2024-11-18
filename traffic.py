@@ -35,7 +35,7 @@ df['month'] = df['date_time'].dt.strftime('%B')
 df['hour'] = df['date_time'].dt.hour
 
 # Drop the original 'date_time' column
-df = df.drop(columns=['date_time'])
+df = df.drop(columns=['date_time', 'traffic_volume'])
 sample_df = df.copy()
 
 # Confidence Interval Slider
@@ -45,8 +45,6 @@ confidence_interval = st.slider('Set confidence interval', min_value=0.01, max_v
 with st.sidebar.form("user_inputs_form"):
     st.header("User Input")
     st.image('traffic_sidebar.jpg', use_column_width=True)
-
-    selected_model = st.selectbox('Select Model', options=['XGBoost Regressor', 'MAPIE Regressor'])
 
     with st.expander('Option 1: Upload CSV File'):
         input_CSV = st.file_uploader('Upload CSV')
@@ -72,20 +70,28 @@ with st.sidebar.form("user_inputs_form"):
 
     submit_button = st.form_submit_button("Predict")
 
+st.subheader("Sample Dataframe")
+st.write(sample_df.tail(4))
+
 # Process User Inputs
 if submit_button:
-    st.write("Processing prediction...")
-
     try:
         # Handle CSV Upload
         if input_CSV:
             df = pd.read_csv(input_CSV)
+            user_encoded_df = pd.get_dummies(df)
+            sample_df_encoded = pd.get_dummies(sample_df)            
+            missing_columns = [col for col in sample_df_encoded.columns if col not in user_encoded_df.columns]
 
-            # Normalize column names
-            df.columns = df.columns.str.strip().str.lower()
+            # Add missing columns to df1 and initialize them with None
+            for col in missing_columns:
+                user_encoded_df[col] = False
+            
+            missing_columns2 = [col for col in user_encoded_df.columns if col not in sample_df_encoded.columns]
+            user_encoded_df = user_encoded_df[sample_df_encoded.columns]
+
         else:
-            # Use manually entered form data
-            df = pd.DataFrame([{
+            user_input = pd.DataFrame([{
                 'holiday': input_holiday,
                 'temp': input_temp,
                 'rain_1h': input_rain,
@@ -96,33 +102,62 @@ if submit_button:
                 'month': input_month,
                 'hour': input_time
             }])
+            
+            combined_df = pd.concat([sample_df, user_input], ignore_index=True)
+            
+            # Apply one-hot encoding
+            encoded_combined_df = pd.get_dummies(combined_df)
 
-        # Encode categorical variables
-        encoded_df = pd.get_dummies(df, columns=['holiday', 'weather_main', 'weekday', 'month'], drop_first=True)
-
+            # Extract only the user row
+            user_encoded_df = encoded_combined_df.tail()
+        
         # Prediction logic with confidence intervals
         alpha = confidence_interval
-        predictions, intervals = reg_model.predict(encoded_df, alpha=alpha)
+        st.write(f'Alpha: {alpha}')
+        predictions, intervals = reg_model.predict(user_encoded_df, alpha=alpha)
 
         # Extract intervals
-        lower_bounds = intervals[:, 0]
+        lower_bounds = np.maximum(intervals[:, 0], 0)
         upper_bounds = intervals[:, 1]
 
         # Add predictions and intervals to DataFrame
-        encoded_df['predicted_volume'] = predictions
-        encoded_df['lower_bound'] = lower_bounds
-        encoded_df['upper_bound'] = upper_bounds
+        user_encoded_df['predicted_volume'] = predictions
+        user_encoded_df['lower_bound'] = lower_bounds
+        user_encoded_df['upper_bound'] = upper_bounds
 
-        # Display results
-        st.metric(label="Predicted Traffic Volume", value=f"{predictions[0]:.2f}")
-        st.write(f"Confidence Interval: {lower_bounds[0]:.2f} to {upper_bounds[0]:.2f}")
-        st.write(encoded_df)
-    except Exception as e:
-        st.error(f"An error occurred: {e}")
+        columns_to_move = ['predicted_volume', 'lower_bound', 'upper_bound']
+        remaining_columns = [col for col in user_encoded_df.columns if col not in columns_to_move]
+        new_column_order = columns_to_move + remaining_columns
 
-# Display insights
-st.subheader("Sample Dataframe")
-st.write(sample_df.tail(10))
+        # Reorder the DataFrame
+        user_encoded_df = user_encoded_df[new_column_order]
+
+        # Display the reordered DataFrame        
+        user_encoded_df = user_encoded_df[new_column_order]
+
+        # Highlight the last row if CSV is not uploaded
+        if not input_CSV:
+            st.metric(label="Predicted Traffic Volume", value=f"{predictions[0]:.2f}")
+            st.write(f"With a {alpha * 100}% confidence interval:")
+            st.subheader("User Inputs with Predictions and Intervals")
+            # Apply styling to highlight the last row in light blue
+            styled_df = user_encoded_df.style.apply(
+                lambda x: ['background-color: yellow' if i == len(x) - 1 else '' for i in range(len(x))], 
+                axis=0
+            )
+            
+            # Use `st.dataframe` for better interaction
+            st.dataframe(styled_df)
+        else:
+            # If CSV is uploaded, simply display the DataFrame
+            st.write(f"With a {alpha * 100}% confidence interval:")
+            st.subheader("User Dataframe with Predictions and Intervals")
+            st.write(user_encoded_df)
+
+        
+
+    except Exception as err:
+        st.error(f"An error occurred: {err}")
 
 st.subheader("Model Insights")
 tab1, tab2, tab3, tab4 = st.tabs(["Feature Importance", 
